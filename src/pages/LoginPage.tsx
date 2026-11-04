@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
+import { getDefaultApiBaseUrl } from '@/config';
 import { useAuth } from '@/context/AuthContext';
 
 export const LoginPage: React.FC = () => {
@@ -26,10 +27,12 @@ export const LoginPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // If already logged in as Admin, redirect
-  if (isAuthenticated && isAdmin) {
-    navigate('/admin');
-  }
+  // If already logged in as Admin, redirect cleanly
+  React.useEffect(() => {
+    if (isAuthenticated && isAdmin) {
+      navigate('/admin', { replace: true });
+    }
+  }, [isAuthenticated, isAdmin, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -140,9 +143,24 @@ export const LoginPage: React.FC = () => {
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
-              <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{error}</span>
+              <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-start gap-2.5 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                <div className="flex-1 space-y-1">
+                  <p className="font-semibold leading-relaxed">{error}</p>
+                  {(error.includes('8443') || error.includes('puerto') || error.includes('CORS') || error.includes('SSL') || error.includes('conexión')) && (
+                    <p className="text-[11px] text-rose-700/90 pt-0.5">
+                      Tip: Si el navegador no confía en el certificado SSL de la API en el puerto 8443,{' '}
+                      <a
+                        href={`${getDefaultApiBaseUrl().replace(/\/+$/, '')}/health`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline font-bold hover:text-rose-950"
+                      >
+                        hacé clic acá para abrir la API y aceptarlo
+                      </a>.
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 

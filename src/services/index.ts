@@ -5,6 +5,7 @@ import { mockStore } from '@/services/mock-store';
 import type {
   Category,
   Commerce,
+  CreateBulkStockPurchasePayload,
   CreateOrderAdminInput,
   FinancialSummary,
   MovementItem,
@@ -12,6 +13,7 @@ import type {
   OrderStatus,
   Product,
   StockPurchase,
+  StockPurchaseBatch,
 } from '@/types';
 
 function extractAmount(moneyObj: any, fallback = '0.00'): string {
@@ -35,6 +37,7 @@ function mapApiProduct(p: any): Product {
     unit: p.unit || 'UNIT',
     presentation: p.presentation || '',
     price: extractAmount(p.price, '0.00'),
+    costPrice: p.costPrice ? extractAmount(p.costPrice, '0.00') : undefined,
     availableStock: Number(p.availableStock ?? 0),
     minStock: p.minStock ? Number(p.minStock) : undefined,
     imageUrl: p.imageUrl || undefined,
@@ -65,6 +68,10 @@ function mapApiCommerce(c: any): Commerce {
 function mapApiOrder(o: any): Order {
   return {
     id: o.id,
+    orderNumber:
+      o.number ||
+      o.orderNumber ||
+      (typeof o.id === 'string' && !o.id.startsWith('c') ? o.id : undefined),
     commerceId: o.commerceId || '',
     commerceName: o.commerceName || (o.commerce?.tradeName ?? 'Comercio'),
     status: o.status || 'PENDING',
@@ -92,6 +99,7 @@ function mapApiOrder(o: any): Order {
 function mapApiStockPurchase(sp: any): StockPurchase {
   return {
     id: sp.id,
+    batchId: sp.batchId || null,
     productId: sp.productId,
     productName: sp.productName,
     productSku: sp.productSku,
@@ -101,6 +109,19 @@ function mapApiStockPurchase(sp: any): StockPurchase {
     supplierName: sp.supplierName || 'Proveedor',
     notes: sp.notes || null,
     createdAt: sp.createdAt || new Date().toISOString(),
+  };
+}
+
+function mapApiStockPurchaseBatch(b: any): StockPurchaseBatch {
+  return {
+    id: b.id,
+    number: Number(b.number ?? 0),
+    supplierName: b.supplierName || 'Proveedor',
+    invoiceNumber: b.invoiceNumber || null,
+    notes: b.notes || null,
+    totalCost: extractAmount(b.totalCost, '0.00'),
+    createdAt: b.createdAt || new Date().toISOString(),
+    items: Array.isArray(b.items) ? b.items.map(mapApiStockPurchase) : [],
   };
 }
 
@@ -115,13 +136,18 @@ export const services = {
   },
 
   // Products
-  async listProducts(categoryId?: string): Promise<Product[]> {
+  async listProducts(categoryId?: string, includeInactive = true): Promise<Product[]> {
     if (getDataSourceMode() === 'demo') {
       const list = mockStore.getProducts();
-      return categoryId ? list.filter((p) => p.categoryId === categoryId) : list;
+      const filtered = categoryId ? list.filter((p) => p.categoryId === categoryId) : list;
+      return includeInactive ? filtered : filtered.filter((p) => p.active);
     }
-    const params = categoryId ? `?categoryId=${encodeURIComponent(categoryId)}` : '';
-    const res = await apiRequest<any>(`/products${params}`);
+    const params = new URLSearchParams();
+    if (categoryId) params.set('categoryId', categoryId);
+    if (includeInactive) params.set('includeInactive', 'true');
+    params.set('size', '100');
+    const q = params.toString() ? `?${params.toString()}` : '';
+    const res = await apiRequest<any>(`/products${q}`);
     const items = Array.isArray(res) ? res : res?.items || [];
     return items.map(mapApiProduct);
   },
@@ -143,6 +169,7 @@ export const services = {
     unit: Product['unit'];
     presentation: string;
     price: string;
+    costPrice?: string;
     availableStock: number;
     imageUrl?: string;
     active?: boolean;
@@ -165,6 +192,7 @@ export const services = {
         unit: data.unit,
         presentation: data.presentation,
         price: data.price,
+        costPrice: data.costPrice,
         availableStock: data.availableStock,
         imageUrl: data.imageUrl || undefined,
         active: data.active ?? true,
@@ -184,13 +212,24 @@ export const services = {
     return mapApiProduct(res);
   },
 
-  async updateProductStock(id: string, newStock: number): Promise<Product> {
+  async updateProductStock(
+    id: string,
+    newStock: number,
+    costPrice?: string,
+  ): Promise<Product> {
     if (getDataSourceMode() === 'demo') {
-      return mockStore.updateProduct(id, { availableStock: newStock });
+      return mockStore.updateProduct(id, {
+        availableStock: newStock,
+        ...(costPrice ? { costPrice } : {}),
+      });
     }
-    const res = await apiRequest<any>(`/products/${id}`, {
+    const body: Record<string, unknown> = { availableStock: newStock };
+    if (costPrice !== undefined && costPrice.trim()) {
+      body.costPrice = costPrice.trim();
+    }
+    const res = await apiRequest<any>(`/products/${id}/stock`, {
       method: 'PATCH',
-      body: { availableStock: newStock },
+      body,
     });
     return mapApiProduct(res);
   },
@@ -260,13 +299,13 @@ export const services = {
 
   // Orders
   async listOrders(filters?: {
-    status?: string;
+    status?: OrderStatus | string;
     paymentStatus?: string;
     commerceId?: string;
     search?: string;
   }): Promise<Order[]> {
     if (getDataSourceMode() === 'demo') {
-      return mockStore.getOrders(filters);
+      return mockStore.getOrders(filters as any);
     }
     const params = new URLSearchParams();
     if (filters?.status && filters.status !== 'ALL') {
@@ -275,6 +314,7 @@ export const services = {
     if (filters?.commerceId) {
       params.set('commerceId', filters.commerceId);
     }
+    params.set('size', '100');
     const q = params.toString() ? `?${params.toString()}` : '';
     const res = await apiRequest<any>(`/orders${q}`);
     const items = Array.isArray(res) ? res : res?.items || [];
@@ -306,6 +346,10 @@ export const services = {
       },
     });
     return mapApiOrder(res);
+  },
+
+  async createAdminOrder(data: CreateOrderAdminInput): Promise<Order> {
+    return this.createOrderAsAdmin(data);
   },
 
   async updateOrderStatus(id: string, status: OrderStatus): Promise<Order> {
@@ -359,7 +403,7 @@ export const services = {
     return updated;
   },
 
-  // Accounting & Billing
+  // Accounting & Financial
   async getAccountingSummary(query?: {
     from?: string;
     to?: string;
@@ -443,6 +487,28 @@ export const services = {
     return (Array.isArray(res) ? res : []).map(mapApiStockPurchase);
   },
 
+  async getStockPurchaseBatches(query?: {
+    from?: string;
+    to?: string;
+    period?: string;
+  }): Promise<StockPurchaseBatch[]> {
+    if (getDataSourceMode() === 'demo') {
+      const from = query?.from ? new Date(query.from) : undefined;
+      const to = query?.to ? new Date(query.to) : undefined;
+      return mockStore.getStockPurchaseBatches(from || to ? { from, to } : undefined);
+    }
+
+    const params = new URLSearchParams();
+    if (query?.from) params.set('from', query.from);
+    if (query?.to) params.set('to', query.to);
+    if (query?.period) params.set('period', query.period);
+
+    const q = params.toString() ? `?${params.toString()}` : '';
+    const res = await apiRequest<any[]>(`/accounting/stock-purchases/batches${q}`);
+
+    return (Array.isArray(res) ? res : []).map(mapApiStockPurchaseBatch);
+  },
+
   async createStockPurchase(data: {
     productId: string;
     quantity: number;
@@ -461,13 +527,26 @@ export const services = {
     return mapApiStockPurchase(res);
   },
 
+  async createBulkStockPurchase(
+    payload: CreateBulkStockPurchasePayload,
+  ): Promise<StockPurchaseBatch> {
+    if (getDataSourceMode() === 'demo') {
+      return mockStore.createBulkStockPurchase(payload);
+    }
+
+    const res = await apiRequest<any>('/accounting/stock-purchases/bulk', {
+      method: 'POST',
+      body: payload,
+    });
+    return mapApiStockPurchaseBatch(res);
+  },
+
   async downloadBillingPdf(query?: {
     from?: string;
     to?: string;
     period?: string;
   }): Promise<void> {
     if (getDataSourceMode() === 'demo') {
-      // In demo mode, trigger alert and print friendly preview
       window.print();
       return;
     }

@@ -2,18 +2,17 @@ import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
-  Boxes,
-  Camera,
   Check,
+  CheckCircle2,
   Edit,
-  Eye,
   Filter,
-  Image as ImageIcon,
   Loader2,
   Package,
   Plus,
   RefreshCw,
   Search,
+  TrendingDown,
+  TrendingUp,
   X,
 } from 'lucide-react';
 import { StockBadge } from '@/components/Badge';
@@ -21,6 +20,23 @@ import { Modal } from '@/components/Modal';
 import { formatMoney } from '@/lib/money';
 import { services } from '@/services';
 import type { Category, Product, ProductUnit } from '@/types';
+
+function calculateMargin(priceStr: string, costStr?: string) {
+  const price = Number(priceStr);
+  const cost = Number(costStr || '0');
+  if (!cost || cost <= 0 || !price || price <= 0) return null;
+
+  const margin = ((price - cost) / price) * 100;
+  const markup = ((price - cost) / cost) * 100;
+
+  return {
+    margin: margin.toFixed(1),
+    markup: markup.toFixed(1),
+    isNegative: price < cost,
+    isLow: margin < 15,
+    isGood: margin >= 30,
+  };
+}
 
 export const AdminProductsPage: React.FC = () => {
   const [products, setProducts] = useState<Product[]>([]);
@@ -31,6 +47,7 @@ export const AdminProductsPage: React.FC = () => {
   // Filters
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [stockFilter, setStockFilter] = useState<'ALL' | 'EXHAUSTED' | 'LOW' | 'NORMAL'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'PENDING'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Modals
@@ -40,7 +57,11 @@ export const AdminProductsPage: React.FC = () => {
 
   // Stock edit state
   const [newStockValue, setNewStockValue] = useState<number>(0);
+  const [newCostPriceValue, setNewCostPriceValue] = useState<string>('');
   const [isStockSubmitting, setIsStockSubmitting] = useState(false);
+
+  // Success message toast/banner
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
   // Add Product form state
   const [addForm, setAddForm] = useState({
@@ -52,6 +73,7 @@ export const AdminProductsPage: React.FC = () => {
     unit: 'UNIT' as ProductUnit,
     presentation: '',
     price: '',
+    costPrice: '',
     availableStock: 50,
     imageUrl: '',
     active: true,
@@ -66,7 +88,7 @@ export const AdminProductsPage: React.FC = () => {
     try {
       const [cats, prods] = await Promise.all([
         services.listCategories(),
-        services.listProducts(),
+        services.listProducts(undefined, true),
       ]);
       setCategories(cats);
       setProducts(prods);
@@ -84,6 +106,8 @@ export const AdminProductsPage: React.FC = () => {
     loadData();
   }, []);
 
+  const pendingCount = products.filter((p) => !p.active).length;
+
   const filteredProducts = products.filter((p) => {
     if (selectedCategory !== 'ALL' && p.categoryId !== selectedCategory) {
       return false;
@@ -95,6 +119,12 @@ export const AdminProductsPage: React.FC = () => {
       return false;
     }
     if (stockFilter === 'NORMAL' && p.availableStock <= 10) {
+      return false;
+    }
+    if (statusFilter === 'ACTIVE' && !p.active) {
+      return false;
+    }
+    if (statusFilter === 'PENDING' && p.active) {
       return false;
     }
     if (searchTerm.trim()) {
@@ -110,6 +140,7 @@ export const AdminProductsPage: React.FC = () => {
   const handleOpenStockModal = (p: Product) => {
     setStockModalProduct(p);
     setNewStockValue(p.availableStock);
+    setNewCostPriceValue(p.costPrice || '');
   };
 
   const handleStockSubmit = async (e: React.FormEvent) => {
@@ -117,9 +148,14 @@ export const AdminProductsPage: React.FC = () => {
     if (!stockModalProduct) return;
     setIsStockSubmitting(true);
     try {
-      const updated = await services.updateProductStock(stockModalProduct.id, Number(newStockValue));
+      const updated = await services.updateProductStock(
+        stockModalProduct.id,
+        Number(newStockValue),
+        newCostPriceValue.trim() || undefined,
+      );
       setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setStockModalProduct(null);
+      showNotice(`Stock actualizado para ${updated.name}`);
     } catch (err: any) {
       alert(err?.message || 'Error al actualizar stock');
     } finally {
@@ -131,9 +167,31 @@ export const AdminProductsPage: React.FC = () => {
     try {
       const updated = await services.updateProduct(p.id, { active: !p.active });
       setProducts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      showNotice(
+        updated.active
+          ? `Producto "${updated.name}" publicado en catálogo`
+          : `Producto "${updated.name}" pausado`,
+      );
     } catch (err: any) {
       alert(err?.message || 'Error al modificar estado activo');
     }
+  };
+
+  const handleApproveProduct = async (p: Product) => {
+    try {
+      const updated = await services.updateProduct(p.id, { active: true });
+      setProducts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      showNotice(`¡Producto "${updated.name}" aprobado y publicado con éxito!`);
+    } catch (err: any) {
+      alert(err?.message || 'Error al aprobar producto');
+    }
+  };
+
+  const showNotice = (msg: string) => {
+    setSuccessBanner(msg);
+    setTimeout(() => {
+      setSuccessBanner((cur) => (cur === msg ? null : cur));
+    }, 4000);
   };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
@@ -149,6 +207,7 @@ export const AdminProductsPage: React.FC = () => {
       const created = await services.createProduct({
         ...addForm,
         price: addForm.price.trim(),
+        costPrice: addForm.costPrice.trim() || undefined,
         availableStock: Number(addForm.availableStock),
       });
       setProducts((prev) => [created, ...prev]);
@@ -162,10 +221,12 @@ export const AdminProductsPage: React.FC = () => {
         unit: 'UNIT',
         presentation: '',
         price: '',
+        costPrice: '',
         availableStock: 50,
         imageUrl: '',
         active: true,
       });
+      showNotice(`Producto "${created.name}" creado correctamente`);
     } catch (err: any) {
       setFormError(err?.message || 'Error al crear producto');
     } finally {
@@ -184,12 +245,14 @@ export const AdminProductsPage: React.FC = () => {
         brand: editProduct.brand,
         presentation: editProduct.presentation,
         price: editProduct.price,
+        costPrice: editProduct.costPrice || undefined,
         description: editProduct.description,
         imageUrl: editProduct.imageUrl,
         unit: editProduct.unit,
       });
       setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       setEditProduct(null);
+      showNotice(`Cambios guardados en "${updated.name}"`);
     } catch (err: any) {
       setFormError(err?.message || 'Error al actualizar producto');
     } finally {
@@ -206,7 +269,7 @@ export const AdminProductsPage: React.FC = () => {
             Supervisión de Catálogo y Stock
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Ajuste de existencias, precios mayoristas y disponibilidad de artículos
+            Ajuste de existencias, costos, precios mayoristas y aprobación de artículos
           </p>
         </div>
 
@@ -230,6 +293,13 @@ export const AdminProductsPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {successBanner && (
+        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-xs font-semibold animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+          <span>{successBanner}</span>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
@@ -260,25 +330,53 @@ export const AdminProductsPage: React.FC = () => {
           ))}
         </div>
 
-        {/* Search and Stock Level Filter */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-100">
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-            <input
-              type="text"
-              placeholder="Buscar por SKU, nombre o marca..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white transition-colors"
-            />
-            {searchTerm && (
-              <button
-                onClick={() => setSearchTerm('')}
-                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            )}
+        {/* Status Filter Tabs & Stock Level Filter */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-[11px] font-bold text-slate-400 uppercase mr-1">
+              Catálogo:
+            </span>
+            <button
+              onClick={() => setStatusFilter('ALL')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                statusFilter === 'ALL'
+                  ? 'bg-slate-800 text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Todos ({products.length})
+            </button>
+            <button
+              onClick={() => setStatusFilter('ACTIVE')}
+              className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                statusFilter === 'ACTIVE'
+                  ? 'bg-emerald-700 text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Publicados ({products.filter((p) => p.active).length})
+            </button>
+            <button
+              onClick={() => setStatusFilter('PENDING')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                statusFilter === 'PENDING'
+                  ? 'bg-amber-600 text-white'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <span>Pendientes</span>
+              {pendingCount > 0 && (
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                    statusFilter === 'PENDING'
+                      ? 'bg-white text-amber-700'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {pendingCount}
+                </span>
+              )}
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -295,6 +393,26 @@ export const AdminProductsPage: React.FC = () => {
               <option value="NORMAL">Stock Normal (&gt; 10)</option>
             </select>
           </div>
+        </div>
+
+        {/* Search Bar */}
+        <div className="relative pt-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+          <input
+            type="text"
+            placeholder="Buscar por SKU, nombre o marca..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white transition-colors"
+          />
+          {searchTerm && (
+            <button
+              onClick={() => setSearchTerm('')}
+              className="absolute right-3 top-3 text-slate-400 hover:text-slate-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -328,98 +446,151 @@ export const AdminProductsPage: React.FC = () => {
                   <th className="py-3 px-4">Producto</th>
                   <th className="py-3 px-4">SKU / Marca</th>
                   <th className="py-3 px-4">Presentación</th>
-                  <th className="py-3 px-4">Precio Mayorista</th>
+                  <th className="py-3 px-4">Precio / Costo</th>
                   <th className="py-3 px-4">Stock Disponible</th>
                   <th className="py-3 px-4">Estado</th>
                   <th className="py-3 px-4 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredProducts.map((p) => (
-                  <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3.5 px-4">
-                      <div className="flex items-center gap-3">
-                        {p.imageUrl ? (
-                          <img
-                            src={p.imageUrl}
-                            alt={p.name}
-                            className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
-                          />
-                        ) : (
-                          <div
-                            className="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 font-bold text-xs shadow-xs"
-                            style={{ backgroundColor: p.imageColor || '#0ea5e9' }}
-                          >
-                            <Package className="w-5 h-5 opacity-90" />
-                          </div>
-                        )}
-                        <div>
-                          <div className="font-bold text-slate-900 text-sm">{p.name}</div>
-                          <div className="text-[11px] text-slate-400 line-clamp-1">
-                            {p.description}
+                {filteredProducts.map((p) => {
+                  const marginData = calculateMargin(p.price, p.costPrice);
+
+                  return (
+                    <tr
+                      key={p.id}
+                      className={`hover:bg-slate-50/80 transition-colors ${
+                        !p.active ? 'bg-amber-50/20' : ''
+                      }`}
+                    >
+                      <td className="py-3.5 px-4">
+                        <div className="flex items-center gap-3">
+                          {p.imageUrl ? (
+                            <img
+                              src={p.imageUrl}
+                              alt={p.name}
+                              className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
+                            />
+                          ) : (
+                            <div
+                              className="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 font-bold text-xs shadow-xs"
+                              style={{ backgroundColor: p.imageColor || '#0ea5e9' }}
+                            >
+                              <Package className="w-5 h-5 opacity-90" />
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                              <span>{p.name}</span>
+                              {!p.active && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-amber-100 text-amber-800 uppercase tracking-wider">
+                                  Pendiente
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400 line-clamp-1">
+                              {p.description}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 font-medium text-slate-700">
-                      <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-[11px] text-slate-800 font-bold">
-                        {p.sku}
-                      </span>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{p.brand}</div>
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-600">
-                      {p.presentation || '—'}
-                      <div className="text-[10px] text-slate-400 uppercase font-semibold">
-                        {p.unit}
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 font-black text-slate-900 text-sm">
-                      {formatMoney(p.price)}
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <StockBadge stock={p.availableStock} minStock={p.minStock} />
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <button
-                        onClick={() => handleToggleActive(p)}
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors cursor-pointer ${
-                          p.active
-                            ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
-                            : 'bg-slate-100 border-slate-200 text-slate-500 hover:bg-slate-200'
-                        }`}
-                        title="Click para activar o pausar producto"
-                      >
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            p.active ? 'bg-emerald-500' : 'bg-slate-400'
-                          }`}
-                        />
-                        {p.active ? 'Publicado' : 'Pausado'}
-                      </button>
-                    </td>
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="inline-flex items-center gap-1.5">
-                        <button
-                          onClick={() => handleOpenStockModal(p)}
-                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 text-slate-700 font-bold rounded-lg transition-colors cursor-pointer"
-                          title="Actualizar Stock"
-                        >
-                          Stock
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditProduct({ ...p });
-                            setFormError(null);
-                          }}
-                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
-                          title="Editar Producto y Foto"
-                        >
-                          <Edit className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="py-3.5 px-4 font-medium text-slate-700">
+                        <span className="font-mono bg-slate-100 px-2 py-0.5 rounded text-[11px] text-slate-800 font-bold">
+                          {p.sku}
+                        </span>
+                        <div className="text-[11px] text-slate-400 mt-0.5">{p.brand}</div>
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-600">
+                        {p.presentation || '—'}
+                        <div className="text-[10px] text-slate-400 uppercase font-semibold">
+                          {p.unit}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="font-black text-slate-900 text-sm">
+                          {formatMoney(p.price)}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[11px] text-slate-400 font-medium">
+                            Costo:{' '}
+                            {p.costPrice && Number(p.costPrice) > 0
+                              ? formatMoney(p.costPrice)
+                              : '—'}
+                          </span>
+                          {marginData && (
+                            <span
+                              className={`px-1.5 py-0.2 rounded text-[10px] font-black ${
+                                marginData.isNegative
+                                  ? 'bg-rose-100 text-rose-700'
+                                  : marginData.isLow
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : 'bg-emerald-100 text-emerald-800'
+                              }`}
+                              title={`Margen: ${marginData.margin}% | Markup sobre costo: +${marginData.markup}%`}
+                            >
+                              {marginData.isNegative ? '' : '+'}
+                              {marginData.margin}%
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <StockBadge stock={p.availableStock} minStock={p.minStock} />
+                      </td>
+                      <td className="py-3.5 px-4">
+                        {!p.active ? (
+                          <div className="inline-flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleApproveProduct(p)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                              title="Aprobar y publicar producto en catálogo"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              Aprobar
+                            </button>
+                            <button
+                              onClick={() => handleToggleActive(p)}
+                              className="text-[11px] text-slate-400 hover:text-slate-600 px-1 py-1"
+                              title="Pausar o mantener inactivo"
+                            >
+                              Pausado
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleToggleActive(p)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors cursor-pointer bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                            title="Click para pausar producto"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            Publicado
+                          </button>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleOpenStockModal(p)}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-teal-50 hover:text-teal-700 text-slate-700 font-bold rounded-lg transition-colors cursor-pointer"
+                            title="Actualizar Stock y Costo"
+                          >
+                            Stock
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditProduct({ ...p });
+                              setFormError(null);
+                            }}
+                            className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                            title="Editar Producto, Precio y Costo"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -445,7 +616,7 @@ export const AdminProductsPage: React.FC = () => {
 
             <div>
               <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
-                Nuevo Stock Disponible
+                Nuevo Stock Disponible *
               </label>
               <div className="flex items-center gap-2">
                 <button
@@ -485,6 +656,24 @@ export const AdminProductsPage: React.FC = () => {
                   +10
                 </button>
               </div>
+            </div>
+
+            <div>
+              <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
+                Costo Unitario de Reposición (opcional)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder={stockModalProduct.costPrice || '0.00'}
+                value={newCostPriceValue}
+                onChange={(e) => setNewCostPriceValue(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white"
+              />
+              <span className="text-[11px] text-slate-400 mt-0.5 block">
+                Actualiza el costo unitario de compra en el catálogo.
+              </span>
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
@@ -612,7 +801,7 @@ export const AdminProductsPage: React.FC = () => {
 
               <div>
                 <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Precio Mayorista (ARS) *
+                  Precio Mayorista Venta (ARS) *
                 </label>
                 <input
                   type="number"
@@ -626,6 +815,20 @@ export const AdminProductsPage: React.FC = () => {
               </div>
 
               <div>
+                <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
+                  Costo de Compra (ARS) (opcional)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={addForm.costPrice}
+                  onChange={(e) => setAddForm({ ...addForm, costPrice: e.target.value })}
+                  placeholder="850.00"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="md:col-span-2">
                 <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
                   Stock Inicial Disponible *
                 </label>
@@ -743,6 +946,20 @@ export const AdminProductsPage: React.FC = () => {
               </div>
 
               <div>
+                <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
+                  Costo de Compra (ARS)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editProduct.costPrice || ''}
+                  onChange={(e) => setEditProduct({ ...editProduct, costPrice: e.target.value })}
+                  placeholder="850.00"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white"
+                />
+              </div>
+
+              <div className="md:col-span-2">
                 <label className="block font-bold uppercase tracking-wider text-slate-700 mb-1">
                   Presentación
                 </label>

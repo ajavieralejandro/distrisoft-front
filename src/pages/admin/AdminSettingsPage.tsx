@@ -12,7 +12,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { probeServer } from '@/api/http';
-import { getDefaultApiBaseUrl, setApiBaseUrl } from '@/config';
+import { getDefaultApiBaseUrl, resetApiBaseUrl, setApiBaseUrl } from '@/config';
 import { useAuth } from '@/context/AuthContext';
 import { mockStore } from '@/services/mock-store';
 
@@ -20,7 +20,12 @@ export const AdminSettingsPage: React.FC = () => {
   const { dataSource, setDataSource } = useAuth();
   const [apiUrl, setApiUrlState] = useState(getDefaultApiBaseUrl());
   const [isTesting, setIsTesting] = useState(false);
-  const [pingResult, setPingResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [pingResult, setPingResult] = useState<{
+    ok: boolean;
+    message: string;
+    targetUrl?: string;
+    isSslOrCors?: boolean;
+  } | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   const handleTestConnection = async () => {
@@ -30,9 +35,9 @@ export const AdminSettingsPage: React.FC = () => {
       const res = await probeServer(apiUrl);
       setPingResult({
         ok: res.ok,
-        message: res.ok
-          ? 'Servidor API responde correctamente (/health OK).'
-          : `No se pudo conectar: ${res.message}`,
+        message: res.message,
+        targetUrl: res.targetUrl,
+        isSslOrCors: res.isSslOrCors,
       });
     } catch (e: any) {
       setPingResult({
@@ -47,6 +52,14 @@ export const AdminSettingsPage: React.FC = () => {
   const handleSaveUrl = () => {
     setApiBaseUrl(apiUrl.trim());
     setSaveMessage('Dirección guardada exitosamente.');
+    setTimeout(() => setSaveMessage(null), 3000);
+  };
+
+  const handleResetUrlToDefault = () => {
+    resetApiBaseUrl();
+    const defaultUrl = getDefaultApiBaseUrl();
+    setApiUrlState(defaultUrl);
+    setSaveMessage('Restablecida a la URL por defecto del entorno.');
     setTimeout(() => setSaveMessage(null), 3000);
   };
 
@@ -163,7 +176,7 @@ export const AdminSettingsPage: React.FC = () => {
                   type="text"
                   value={apiUrl}
                   onChange={(e) => setApiUrlState(e.target.value)}
-                  placeholder="http://localhost:3000"
+                  placeholder="https://distrisoft.duckdns.org:8443/api"
                   className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono focus:outline-none focus:border-teal-500 focus:bg-white"
                 />
               </div>
@@ -173,6 +186,14 @@ export const AdminSettingsPage: React.FC = () => {
                 className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer"
               >
                 Guardar URL
+              </button>
+              <button
+                type="button"
+                onClick={handleResetUrlToDefault}
+                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                title="Restablecer a la URL configurada en variables de entorno"
+              >
+                Por Defecto
               </button>
               <button
                 type="button"
@@ -202,18 +223,39 @@ export const AdminSettingsPage: React.FC = () => {
 
           {pingResult && (
             <div
-              className={`p-4 rounded-2xl border flex items-center gap-3 text-xs font-medium animate-in fade-in duration-200 ${
+              className={`p-4 rounded-2xl border flex flex-col gap-2.5 text-xs font-medium animate-in fade-in duration-200 ${
                 pingResult.ok
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                   : 'bg-rose-50 border-rose-200 text-rose-800'
               }`}
             >
-              {pingResult.ok ? (
-                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+              <div className="flex items-center gap-3">
+                {pingResult.ok ? (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+                )}
+                <span className="font-semibold">{pingResult.message}</span>
+              </div>
+              {!pingResult.ok && pingResult.targetUrl && (
+                <div className="pl-8 pt-1 text-[11px] text-rose-700 space-y-1">
+                  <p>
+                    Comprobá que el backend esté accesible y que el certificado SSL no esté bloqueado.
+                  </p>
+                  <p>
+                    Podés probar abrir directamente:{' '}
+                    <a
+                      href={pingResult.targetUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline font-bold hover:text-rose-900"
+                    >
+                      {pingResult.targetUrl}
+                    </a>{' '}
+                    en una nueva pestaña para inspeccionar o aceptar el certificado del puerto 8443.
+                  </p>
+                </div>
               )}
-              <span>{pingResult.message}</span>
             </div>
           )}
         </div>

@@ -3,14 +3,13 @@ import {
   AlertCircle,
   Banknote,
   CheckCircle,
+  ChevronLeft,
   ChevronRight,
-  Clock,
   Filter,
   Loader2,
   MapPin,
   Package,
   Plus,
-  Receipt,
   RefreshCw,
   Search,
   Truck,
@@ -30,12 +29,16 @@ import {
 import { formatDateTime } from '@/lib/datetime';
 import { formatMoney } from '@/lib/money';
 import { services } from '@/services';
-import type { Order, OrderStatus, PaymentStatus } from '@/types';
+import type { Order, OrderStatus } from '@/types';
 
 export const AdminOrdersPage: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Pagination (10 per page)
+  const PAGE_SIZE = 10;
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -57,6 +60,13 @@ export const AdminOrdersPage: React.FC = () => {
   // Create Order Modal for Admin
   const [showCreateOrderModal, setShowCreateOrderModal] = useState(false);
 
+  const getOrderDisplay = (order: Order) => {
+    return (
+      order.orderNumber ||
+      (order.id && !order.id.startsWith('c') ? order.id : '—')
+    );
+  };
+
   const loadOrders = async () => {
     setLoading(true);
     setError(null);
@@ -77,6 +87,11 @@ export const AdminOrdersPage: React.FC = () => {
     loadOrders();
   }, [statusFilter]);
 
+  // Reset to page 1 whenever filters change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, paymentFilter, searchTerm]);
+
   // Client-side filtering for payment status and search
   const filteredOrders = orders.filter((o) => {
     if (paymentFilter !== 'ALL') {
@@ -85,13 +100,26 @@ export const AdminOrdersPage: React.FC = () => {
     }
     if (searchTerm.trim()) {
       const s = searchTerm.toLowerCase();
+      const matchNumber = o.orderNumber?.toLowerCase().includes(s);
       const matchId = o.id.toLowerCase().includes(s);
       const matchCommerce = o.commerceName.toLowerCase().includes(s);
       const matchItem = o.items.some((i) => i.name.toLowerCase().includes(s));
-      if (!matchId && !matchCommerce && !matchItem) return false;
+      if (!matchNumber && !matchId && !matchCommerce && !matchItem) return false;
     }
     return true;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filteredOrders.length / PAGE_SIZE));
+  const paginatedOrders = filteredOrders.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
+  );
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const handleStatusChange = async (newStatus: OrderStatus) => {
     if (!selectedOrder) return;
@@ -211,7 +239,7 @@ export const AdminOrdersPage: React.FC = () => {
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
             <input
               type="text"
-              placeholder="Buscar por ID, comercio o producto..."
+              placeholder="Buscar por pedido, comercio o producto..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm focus:outline-none focus:border-teal-500 focus:bg-white transition-colors"
@@ -266,11 +294,12 @@ export const AdminOrdersPage: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+            <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/70 border-b border-slate-200/80 text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="py-3 px-4">Pedido / ID</th>
+                  <th className="py-3 px-4">Pedido</th>
                   <th className="py-3 px-4">Comercio</th>
                   <th className="py-3 px-4">Fecha</th>
                   <th className="py-3 px-4">Estado</th>
@@ -280,7 +309,7 @@ export const AdminOrdersPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredOrders.map((order) => {
+                {paginatedOrders.map((order) => {
                   const paymentStatus = paymentStatusOf(order);
                   const outstanding = outstandingOf(order);
                   return (
@@ -290,7 +319,7 @@ export const AdminOrdersPage: React.FC = () => {
                       className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                     >
                       <td className="py-3.5 px-4 font-mono font-bold text-slate-800">
-                        {order.id}
+                        {getOrderDisplay(order)}
                       </td>
                       <td className="py-3.5 px-4">
                         <span className="font-bold text-slate-900 group-hover:text-teal-600 transition-colors">
@@ -352,8 +381,102 @@ export const AdminOrdersPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+
+          {/* Pagination Footer */}
+          {filteredOrders.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 bg-slate-50/70 border-t border-slate-200/80 text-xs text-slate-600">
+              <div>
+                Mostrando{' '}
+                <span className="font-bold text-slate-900">
+                  {(currentPage - 1) * PAGE_SIZE + 1}
+                </span>{' '}
+                a{' '}
+                <span className="font-bold text-slate-900">
+                  {Math.min(currentPage * PAGE_SIZE, filteredOrders.length)}
+                </span>{' '}
+                de{' '}
+                <span className="font-bold text-slate-900">
+                  {filteredOrders.length}
+                </span>{' '}
+                pedidos
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Anterior</span>
+                </button>
+
+                <div className="flex items-center gap-1 mx-1">
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter((p) => {
+                      if (totalPages <= 7) return true;
+                      return (
+                        p === 1 ||
+                        p === totalPages ||
+                        Math.abs(p - currentPage) <= 1
+                      );
+                    })
+                    .reduce<(number | string)[]>((acc, p, idx, arr) => {
+                      if (idx > 0 && typeof arr[idx - 1] === 'number') {
+                        const prev = arr[idx - 1] as number;
+                        if (p - prev > 1) {
+                          acc.push(`dots-${p}`);
+                        }
+                      }
+                      acc.push(p);
+                      return acc;
+                    }, [])
+                    .map((item) => {
+                      if (typeof item === 'string') {
+                        return (
+                          <span
+                            key={item}
+                            className="px-2 py-1 text-slate-400 select-none"
+                          >
+                            ...
+                          </span>
+                        );
+                      }
+                      const pageNum = item;
+                      const isActive = pageNum === currentPage;
+                      return (
+                        <button
+                          key={pageNum}
+                          type="button"
+                          onClick={() => setCurrentPage(pageNum)}
+                          className={`min-w-8 h-8 px-2 rounded-lg font-bold transition-colors cursor-pointer ${
+                            isActive
+                              ? 'bg-teal-600 text-white shadow-xs'
+                              : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  <span>Siguiente</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
 
       {/* Order Detail Modal */}
       {selectedOrder && (
@@ -363,7 +486,11 @@ export const AdminOrdersPage: React.FC = () => {
             setSelectedOrder(null);
             setActionError(null);
           }}
-          title={`Detalle de Pedido ${selectedOrder.id}`}
+          title={
+            getOrderDisplay(selectedOrder) !== '—'
+              ? `Detalle de Pedido ${getOrderDisplay(selectedOrder)}`
+              : 'Detalle de Pedido'
+          }
           subtitle={`Ingresado para ${selectedOrder.commerceName} el ${formatDateTime(selectedOrder.createdAt)}`}
           maxWidth="2xl"
         >
@@ -556,7 +683,11 @@ export const AdminOrdersPage: React.FC = () => {
           isOpen={showPaymentModal}
           onClose={() => setShowPaymentModal(false)}
           title={`Registrar Cobro en Efectivo`}
-          subtitle={`Pedido ${selectedOrder.id} (${selectedOrder.commerceName})`}
+          subtitle={
+            getOrderDisplay(selectedOrder) !== '—'
+              ? `Pedido ${getOrderDisplay(selectedOrder)} (${selectedOrder.commerceName})`
+              : `Cliente: ${selectedOrder.commerceName}`
+          }
           maxWidth="md"
         >
           <form onSubmit={handleRegisterPayment} className="space-y-4">
@@ -613,7 +744,11 @@ export const AdminOrdersPage: React.FC = () => {
           isOpen={showDeliveryModal}
           onClose={() => setShowDeliveryModal(false)}
           title={`Confirmar Entrega del Pedido`}
-          subtitle={`Pedido ${selectedOrder.id} para ${selectedOrder.commerceName}`}
+          subtitle={
+            getOrderDisplay(selectedOrder) !== '—'
+              ? `Pedido ${getOrderDisplay(selectedOrder)} para ${selectedOrder.commerceName}`
+              : `Cliente: ${selectedOrder.commerceName}`
+          }
           maxWidth="md"
         >
           <form onSubmit={handleCompleteDelivery} className="space-y-4 text-xs">
@@ -666,6 +801,7 @@ export const AdminOrdersPage: React.FC = () => {
           onClose={() => setShowCreateOrderModal(false)}
           onOrderCreated={(newOrder) => {
             setOrders((prev) => [newOrder, ...prev]);
+            setCurrentPage(1);
             setSelectedOrder(newOrder);
           }}
         />

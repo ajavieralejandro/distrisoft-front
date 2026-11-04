@@ -22,16 +22,24 @@ type AuthContextType = {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [dataSource, setDataSourceState] = useState<'demo' | 'api'>(getDataSourceMode());
+
   const [user, setUser] = useState<SessionUser | null>(() => {
     try {
+      const mode = getDataSourceMode();
+      const token = getAuthToken();
+
+      // Si estamos en modo API real pero el token no existe o es de demo, invalidamos sesión previa
+      if (mode === 'api' && (!token || token.startsWith('demo-') || token.includes('demo'))) {
+        clearAuthTokens();
+        return null;
+      }
+
       const stored = localStorage.getItem(STORAGE_KEYS.SESSION_USER);
       if (stored) return JSON.parse(stored);
     } catch {}
-    // If initially in demo mode and no user stored, default to demoAdminUser or null
     return null;
   });
-
-  const [dataSource, setDataSourceState] = useState<'demo' | 'api'>(getDataSourceMode());
 
   const setDataSource = (mode: 'demo' | 'api') => {
     saveDataSourceMode(mode);
@@ -39,13 +47,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    // If in API mode and token exists, fetch profile from /auth/me
     const token = getAuthToken();
+
+    // Si pasamos a modo API y había un token mock de demo, limpiarlo de inmediato
+    if (dataSource === 'api' && token && (token.startsWith('demo-') || token.includes('demo'))) {
+      clearAuthTokens();
+      setUser(null);
+      return;
+    }
+
+    // Si estamos en modo API con token válido y sin usuario en memoria, sincronizar perfil con /auth/me
     if (dataSource === 'api' && token && !user) {
       apiRequest<any>('/auth/me')
         .then((profile) => {
           const sessionUser: SessionUser = {
-            userId: profile.id || profile.userId,
+            userId: profile.userId || profile.id,
             email: profile.email,
             displayName: profile.displayName || profile.email,
             profile: (profile.role || profile.profile) as AppProfile,
@@ -55,7 +71,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           localStorage.setItem(STORAGE_KEYS.SESSION_USER, JSON.stringify(sessionUser));
         })
         .catch(() => {
-          // Token expired or invalid
+          // Token expirado o revocado
           clearAuthTokens();
           setUser(null);
         });
@@ -63,7 +79,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [dataSource]);
 
   const login = async (email: string, password = '') => {
-    if (dataSource === 'demo' || email.includes('admin@pruebas') || email.includes('demo')) {
+    // Si estamos en modo demostración, usamos el fixture local
+    if (dataSource === 'demo') {
       const adminSession: SessionUser = {
         ...demoAdminUser,
         email: email || demoAdminUser.email,
@@ -74,35 +91,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // Real API Login
+    // En modo API Real: siempre autenticamos contra distri-api real
+    // El backend distri-api responde: { tokens: { accessToken, refreshToken, ... }, user: { ... } }
     const res = await apiRequest<{
-      accessToken: string;
-      refreshToken: string;
+      tokens?: {
+        accessToken: string;
+        refreshToken: string;
+      };
+      accessToken?: string;
+      refreshToken?: string;
       user?: any;
     }>('/auth/login', {
       method: 'POST',
-      body: { email, password },
+      body: { email: email.trim(), password },
     });
 
-    setAuthTokens(res.accessToken, res.refreshToken);
+    const accessToken = res.tokens?.accessToken || res.accessToken;
+    const refreshToken = res.tokens?.refreshToken || res.refreshToken;
 
-    // Fetch user info
+    if (!accessToken) {
+      throw new Error('El servidor no devolvió un token de acceso válido.');
+    }
+
+    setAuthTokens(accessToken, refreshToken);
+
+    // Obtener información del usuario autenticado
     let sessionUser: SessionUser;
-    if (res.user) {
+    const rawUser = res.user;
+    if (rawUser) {
       sessionUser = {
-        userId: res.user.id,
-        email: res.user.email,
-        displayName: res.user.displayName || res.user.email,
-        profile: res.user.role as AppProfile,
-        commerceId: res.user.commerceId || null,
+        userId: rawUser.userId || rawUser.id,
+        email: rawUser.email,
+        displayName: rawUser.displayName || rawUser.email,
+        profile: (rawUser.role || rawUser.profile) as AppProfile,
+        commerceId: rawUser.commerceId || null,
       };
     } else {
       const me = await apiRequest<any>('/auth/me');
       sessionUser = {
-        userId: me.id,
+        userId: me.userId || me.id,
         email: me.email,
         displayName: me.displayName || me.email,
-        profile: me.role as AppProfile,
+        profile: (me.role || me.profile) as AppProfile,
         commerceId: me.commerceId || null,
       };
     }
@@ -112,9 +142,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginDemoAdmin = () => {
+    setDataSource('demo');
     setUser(demoAdminUser);
     localStorage.setItem(STORAGE_KEYS.SESSION_USER, JSON.stringify(demoAdminUser));
-    setAuthTokens('demo-admin-token', 'demo-refresh-token');
+    setAuthTokens('demo-access-token', 'demo-refresh-token');
   };
 
   const logout = async () => {
@@ -127,8 +158,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
   };
 
-  const isAuthenticated = Boolean(user);
-  const isAdmin = user?.profile === 'ADMIN';
+  // Solo consideramos autenticado si hay usuario Y (en modo API) existe token real
+  const currentToken = getAuthToken();
+  const hasValidToken =
+    dataSource === 'demo' ||
+    (Boolean(currentToken) && !currentToken?.startsWith('demo-') && !currentToken?.includes('demo'));
+  const isAuthenticated = Boolean(user) && hasValidToken;
+  const isAdmin = user?.profile === 'ADMIN' && hasValidToken;
 
   return (
     <AuthContext.Provider

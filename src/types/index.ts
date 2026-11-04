@@ -32,6 +32,7 @@ export type Product = {
   unit: ProductUnit;
   presentation: string;
   price: string;
+  costPrice?: string;
   availableStock: number;
   minStock?: number;
   imageUrl?: string;
@@ -85,6 +86,7 @@ export type DeliverySnapshot = {
 
 export type Order = {
   id: string;
+  orderNumber?: string;
   commerceId: string;
   commerceName: string;
   status: OrderStatus;
@@ -100,6 +102,7 @@ export type Order = {
 
 export type StockPurchase = {
   id: string;
+  batchId?: string | null;
   productId: string;
   productName: string;
   productSku: string;
@@ -109,6 +112,42 @@ export type StockPurchase = {
   supplierName?: string | null;
   notes?: string | null;
   createdAt: string;
+};
+
+export type StockPurchaseBatch = {
+  id: string;
+  number: number;
+  supplierName?: string | null;
+  invoiceNumber?: string | null;
+  notes?: string | null;
+  totalCost: string;
+  createdAt: string;
+  items: StockPurchase[];
+};
+
+export type InlineNewProductInput = {
+  name: string;
+  sku?: string;
+  categoryId: string;
+  brand: string;
+  unit: ProductUnit;
+  presentation: string;
+  price: string;
+  active?: boolean;
+};
+
+export type BulkPurchaseItemInput = {
+  productId?: string;
+  newProduct?: InlineNewProductInput;
+  quantity: number;
+  unitCost: string;
+};
+
+export type CreateBulkStockPurchasePayload = {
+  supplierName?: string;
+  invoiceNumber?: string;
+  notes?: string;
+  items: BulkPurchaseItemInput[];
 };
 
 export type FinancialSummary = {

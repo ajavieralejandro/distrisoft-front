@@ -5,10 +5,11 @@ import {
   initialProducts,
 } from '@/mocks/fixtures';
 import { STORAGE_KEYS } from '@/config';
-import { addMoney, multiplyMoney, subtractMoney, sumMoney } from '@/lib/money';
+import { multiplyMoney, subtractMoney, sumMoney } from '@/lib/money';
 import type {
   Category,
   Commerce,
+  CreateBulkStockPurchasePayload,
   CreateOrderAdminInput,
   FinancialSummary,
   MovementItem,
@@ -16,9 +17,11 @@ import type {
   OrderItem,
   Product,
   StockPurchase,
+  StockPurchaseBatch,
 } from '@/types';
 
 const STORAGE_KEY_STOCK_PURCHASES = 'distrisoft_mock_stock_purchases';
+const STORAGE_KEY_STOCK_BATCHES = 'distrisoft_mock_stock_batches';
 
 const initialStockPurchases: StockPurchase[] = [
   {
@@ -65,6 +68,7 @@ class MockStore {
   private commerces: Commerce[] = [];
   private orders: Order[] = [];
   private stockPurchases: StockPurchase[] = [];
+  private batches: StockPurchaseBatch[] = [];
 
   constructor() {
     this.load();
@@ -83,11 +87,16 @@ class MockStore {
 
       const sp = localStorage.getItem(STORAGE_KEY_STOCK_PURCHASES);
       this.stockPurchases = sp ? JSON.parse(sp) : [...initialStockPurchases];
-    } catch {
+
+      const sb = localStorage.getItem(STORAGE_KEY_STOCK_BATCHES);
+      this.batches = sb ? JSON.parse(sb) : [];
+    } catch (e) {
+      console.warn('Could not load mock store from localStorage, using fixtures', e);
       this.products = [...initialProducts];
       this.commerces = [...initialCommerces];
       this.orders = [...initialOrders];
       this.stockPurchases = [...initialStockPurchases];
+      this.batches = [];
     }
   }
 
@@ -97,6 +106,7 @@ class MockStore {
       localStorage.setItem(STORAGE_KEYS.MOCK_COMMERCES, JSON.stringify(this.commerces));
       localStorage.setItem(STORAGE_KEYS.MOCK_ORDERS, JSON.stringify(this.orders));
       localStorage.setItem(STORAGE_KEY_STOCK_PURCHASES, JSON.stringify(this.stockPurchases));
+      localStorage.setItem(STORAGE_KEY_STOCK_BATCHES, JSON.stringify(this.batches));
     } catch (e) {
       console.warn('Could not save mock store to localStorage', e);
     }
@@ -108,6 +118,7 @@ class MockStore {
     this.commerces = [...initialCommerces];
     this.orders = [...initialOrders];
     this.stockPurchases = [...initialStockPurchases];
+    this.batches = [];
     this.save();
   }
 
@@ -161,23 +172,43 @@ class MockStore {
     return this.commerces.find((c) => c.id === id);
   }
 
-  addCommerce(data: Omit<Commerce, 'id' | 'status' | 'balance'> & { branchName?: string }): Commerce {
-    const newId = `com-${Date.now()}`;
-    const branchName = data.branchName || 'Casa Central';
+  addCommerce(data: {
+    tradeName: string;
+    businessName: string;
+    taxId: string;
+    address: string;
+    city: string;
+    phone: string;
+    email: string;
+    tags: string[];
+    creditLimit: string;
+    branchName?: string;
+  }): Commerce {
+    const id = `com-${Date.now()}`;
     const newCommerce: Commerce = {
-      ...data,
-      id: newId,
+      id,
+      tradeName: data.tradeName,
+      businessName: data.businessName,
+      taxId: data.taxId,
       status: 'ACTIVE',
+      email: data.email,
+      phone: data.phone,
+      address: data.address,
+      city: data.city,
+      tags: data.tags,
+      creditLimit: data.creditLimit,
       balance: '0.00',
-      branches: [
-        {
-          id: `br-${Date.now()}`,
-          commerceId: newId,
-          name: branchName,
-          address: data.address,
-          phone: data.phone,
-        },
-      ],
+      branches: data.branchName
+        ? [
+            {
+              id: `br-${Date.now()}`,
+              commerceId: id,
+              name: data.branchName,
+              address: data.address,
+              phone: data.phone,
+            },
+          ]
+        : [],
     };
     this.commerces.unshift(newCommerce);
     this.save();
@@ -204,6 +235,7 @@ class MockStore {
         (o) =>
           o.id.toLowerCase().includes(q) ||
           o.commerceName.toLowerCase().includes(q) ||
+          (o.orderNumber && o.orderNumber.toLowerCase().includes(q)) ||
           o.items.some((i) => i.name.toLowerCase().includes(q)),
       );
     }
@@ -220,7 +252,6 @@ class MockStore {
     if (commerce.status !== 'ACTIVE') throw new Error('El comercio está inactivo');
 
     // Build lines
-    let totalCents = 0;
     const items: OrderItem[] = input.items.map((it) => {
       const product = this.getProduct(it.productId);
       if (!product) throw new Error(`Producto ${it.productId} no encontrado`);
@@ -240,9 +271,12 @@ class MockStore {
     });
 
     const total = sumMoney(items.map((i) => i.lineTotal));
+    const nextNumber = 1000 + this.orders.length + 1;
+    const orderNumber = `PED-${nextNumber}`;
 
     const newOrder: Order = {
-      id: `PED-${1000 + this.orders.length + 1}`,
+      id: orderNumber,
+      orderNumber,
       commerceId: commerce.id,
       commerceName: commerce.tradeName,
       status: 'PENDING',
@@ -256,6 +290,17 @@ class MockStore {
     };
 
     this.orders.unshift(newOrder);
+
+    // Decrement stock
+    for (const item of input.items) {
+      const prod = this.getProduct(item.productId);
+      if (prod) {
+        this.updateProduct(prod.id, {
+          availableStock: Math.max(0, prod.availableStock - item.quantity),
+        });
+      }
+    }
+
     this.save();
     return newOrder;
   }
@@ -343,17 +388,108 @@ class MockStore {
 
     this.stockPurchases.unshift(purchase);
 
-    // Increment available stock
+    // Increment available stock and set cost price
     this.updateProduct(product.id, {
       availableStock: product.availableStock + data.quantity,
+      costPrice: data.unitCost,
     });
 
     this.save();
     return purchase;
   }
 
+  createBulkStockPurchase(data: CreateBulkStockPurchasePayload): StockPurchaseBatch {
+    const batchId = `batch-${Date.now()}`;
+    const batchNumber = this.batches.length + 1;
+    let batchTotal = '0.00';
+    const itemsCreated: StockPurchase[] = [];
+
+    data.items.forEach((item, index) => {
+      let productId: string;
+      let productName: string;
+      let productSku: string;
+
+      if (item.newProduct) {
+        const newProd = this.addProduct({
+          sku: item.newProduct.sku || `SKU-${Date.now()}-${index}`,
+          name: item.newProduct.name,
+          description: item.newProduct.name,
+          categoryId: item.newProduct.categoryId,
+          brand: item.newProduct.brand,
+          unit: item.newProduct.unit,
+          presentation: item.newProduct.presentation,
+          price: item.newProduct.price,
+          costPrice: item.unitCost,
+          availableStock: item.quantity,
+          imageColor: '#6366f1',
+          active: item.newProduct.active ?? false,
+        });
+        productId = newProd.id;
+        productName = newProd.name;
+        productSku = newProd.sku;
+      } else if (item.productId) {
+        const existing = this.getProduct(item.productId);
+        if (!existing) throw new Error(`Producto ${item.productId} no encontrado`);
+        this.updateProduct(existing.id, {
+          availableStock: existing.availableStock + item.quantity,
+          costPrice: item.unitCost,
+        });
+        productId = existing.id;
+        productName = existing.name;
+        productSku = existing.sku;
+      } else {
+        throw new Error('Cada renglón debe especificar productId o newProduct');
+      }
+
+      const itemTotal = multiplyMoney(item.unitCost, item.quantity);
+      batchTotal = sumMoney([batchTotal, itemTotal]);
+
+      const purchase: StockPurchase = {
+        id: `sp-${Date.now()}-${index}`,
+        batchId,
+        productId,
+        productName,
+        productSku,
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+        totalCost: itemTotal,
+        supplierName: data.supplierName || 'Proveedor Mayorista',
+        notes: data.notes || null,
+        createdAt: new Date().toISOString(),
+      };
+
+      itemsCreated.push(purchase);
+      this.stockPurchases.unshift(purchase);
+    });
+
+    const batch: StockPurchaseBatch = {
+      id: batchId,
+      number: batchNumber,
+      supplierName: data.supplierName || 'Proveedor Mayorista',
+      invoiceNumber: data.invoiceNumber || null,
+      notes: data.notes || null,
+      totalCost: batchTotal,
+      createdAt: new Date().toISOString(),
+      items: itemsCreated,
+    };
+
+    this.batches.unshift(batch);
+    this.save();
+    return batch;
+  }
+
+  getStockPurchaseBatches(dateFilter?: { from?: Date; to?: Date }): StockPurchaseBatch[] {
+    let list = [...this.batches];
+    if (dateFilter?.from) {
+      list = list.filter((b) => new Date(b.createdAt) >= dateFilter.from!);
+    }
+    if (dateFilter?.to) {
+      list = list.filter((b) => new Date(b.createdAt) <= dateFilter.to!);
+    }
+    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
   getAccountingSummary(filter?: { from?: Date; to?: Date }): FinancialSummary {
-    // Incomes from paid amounts of orders
     const relevantOrders = this.orders.filter((o) => {
       if (filter?.from && new Date(o.createdAt) < filter.from) return false;
       if (filter?.to && new Date(o.createdAt) > filter.to) return false;
@@ -367,15 +503,12 @@ class MockStore {
     const totalIncomes = sumMoney(incomesList);
     const incomesCount = incomesList.length;
 
-    // Expenses from stock purchases
     const purchases = this.getStockPurchases(filter);
     const totalExpenses = sumMoney(purchases.map((p) => p.totalCost));
     const expensesCount = purchases.length;
 
-    // Net balance
     const netBalance = subtractMoney(totalIncomes, totalExpenses);
 
-    // Receivables
     const activeOrders = this.orders.filter((o) => o.status !== 'CANCELLED');
     const outstandingList = activeOrders.map((o) => subtractMoney(o.total, o.paidAmount));
     const outstandingReceivables = sumMoney(outstandingList);
@@ -397,7 +530,6 @@ class MockStore {
   getAccountingMovements(filter?: { from?: Date; to?: Date }): MovementItem[] {
     const movements: MovementItem[] = [];
 
-    // Incomes from orders with payment
     for (const o of this.orders) {
       if (Number(o.paidAmount) > 0) {
         if (filter?.from && new Date(o.createdAt) < filter.from) continue;
@@ -406,7 +538,7 @@ class MockStore {
         movements.push({
           id: `mov-pay-${o.id}`,
           type: 'INCOME',
-          concept: `Cobro Pedido #${o.id}`,
+          concept: `Cobro Pedido #${o.orderNumber || o.id}`,
           amount: o.paidAmount,
           referenceId: o.id,
           entityName: o.commerceName,
@@ -416,7 +548,6 @@ class MockStore {
       }
     }
 
-    // Expenses from stock purchases
     for (const sp of this.stockPurchases) {
       if (filter?.from && new Date(sp.createdAt) < filter.from) continue;
       if (filter?.to && new Date(sp.createdAt) > filter.to) continue;

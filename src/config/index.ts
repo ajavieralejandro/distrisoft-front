@@ -10,24 +10,68 @@ export const STORAGE_KEYS = {
   REGISTERED_LEADS: 'distrisoft_registered_leads',
 };
 
+export const DEFAULT_PRODUCTION_API_URL = 'https://distrisoft.duckdns.org:8443/api';
+
 export function getDefaultApiBaseUrl(): string {
-  const stored = localStorage.getItem(STORAGE_KEYS.API_URL);
-  if (stored) return stored;
-  return import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
+  const envUrl = (
+    import.meta.env.VITE_API_URL ||
+    import.meta.env.VITE_API_BASE_URL ||
+    ''
+  ).trim();
+
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.API_URL);
+    if (stored && stored.trim().length > 0) {
+      const trimmed = stored.trim();
+      // Si estamos en entorno HTTPS (ej: https://distrifront.duckdns.org) pero localStorage tiene http://localhost,
+      // descartamos el valor viejo para evitar bloqueos por Mixed Content
+      if (
+        typeof window !== 'undefined' &&
+        window.location.protocol === 'https:' &&
+        trimmed.startsWith('http://')
+      ) {
+        localStorage.removeItem(STORAGE_KEYS.API_URL);
+      } else {
+        return trimmed;
+      }
+    }
+  } catch {
+    // localStorage inaccesible
+  }
+
+  if (envUrl.length > 0) {
+    return envUrl;
+  }
+
+  return DEFAULT_PRODUCTION_API_URL;
 }
 
 export function getDataSourceMode(): 'demo' | 'api' {
-  const stored = localStorage.getItem(STORAGE_KEYS.DATA_SOURCE);
-  if (stored === 'api' || stored === 'demo') {
-    return stored;
-  }
-  return (import.meta.env.VITE_DATA_SOURCE as 'demo' | 'api') || 'demo';
+  const envMode = (import.meta.env.VITE_DATA_SOURCE as 'demo' | 'api') || undefined;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEYS.DATA_SOURCE);
+    if (stored === 'api' || stored === 'demo') {
+      return stored;
+    }
+  } catch {}
+
+  return envMode || 'api';
 }
 
 export function setDataSourceMode(mode: 'demo' | 'api') {
-  localStorage.setItem(STORAGE_KEYS.DATA_SOURCE, mode);
+  try {
+    localStorage.setItem(STORAGE_KEYS.DATA_SOURCE, mode);
+  } catch {}
 }
 
 export function setApiBaseUrl(url: string) {
-  localStorage.setItem(STORAGE_KEYS.API_URL, url);
+  try {
+    localStorage.setItem(STORAGE_KEYS.API_URL, url.trim());
+  } catch {}
+}
+
+export function resetApiBaseUrl() {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.API_URL);
+  } catch {}
 }
